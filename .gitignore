@@ -23,3 +23,6 @@ dist/
 Thumbs.db
 .DS_Store
 *.tmp
+
+# Scratch test files
+/_test_*.py

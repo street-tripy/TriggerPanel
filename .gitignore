@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+venv/
+.venv/
+
+# Local state & secrets — token lives only on this machine.
+# (The server regenerates config.json on first run.)
+config.json*
+server.log
+
+# Generated at runtime (legacy icon file)
+app_icon.ico
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
+*.tmp

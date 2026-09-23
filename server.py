@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TriggerApp — trigger actions on this PC from your phone (iOS Shortcuts).
+"""TriggerPanel — trigger actions on this PC from your phone (iOS Shortcuts).
 
 Native PyQt6 desktop app (dark theme, styled like TradingBot) with a
 system-tray icon, plus a tiny HTTP server:
@@ -38,7 +38,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from PyQt6.QtCore import QBuffer, QEvent, QIODevice, QPointF, Qt, QTimer
+from PyQt6.QtCore import QBuffer, QEvent, QIODevice, QPointF, QSize, Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPolygonF, QPixmap
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox,
@@ -48,7 +48,13 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QSystemTrayIcon, QTreeWidget, QTreeWidgetItem,
                              QVBoxLayout, QWidget)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FROZEN = bool(getattr(sys, "frozen", False))  # set by PyInstaller
+if FROZEN:
+    # Onefile: __file__ lives in the extraction temp dir — keep config/log
+    # next to the actual .exe instead (exe sits at the project root).
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "server.log")
 
@@ -68,6 +74,9 @@ ICON_PNG: bytes | None = None
 _RESTART = {"pending": False}
 
 ENTRY_TYPES = ("app", "script", "keys", "http")
+
+APP_VERSION = "1.1.0"
+SETTINGS_ICON = "settings.png"   # title-bar gear (from TradingBot ui/icons)
 
 # ── TradingBot palette (Catppuccin Mocha) ─────────────────────────────────────
 CRUST = "#11111b"     # title bar
@@ -94,6 +103,11 @@ QLabel#stepLbl {{ color: {SUBTEXT}; font-size: 11px; font-weight: bold; }}
 QLabel#statusOk {{ color: {GREEN}; font-weight: bold; }}
 QLabel#statusWarn {{ color: {RED}; font-weight: bold; }}
 QLabel#statusInfo {{ color: {BLUE}; font-weight: bold; }}
+QLabel#panelLink a {{ color: {BLUE}; text-decoration: none; }}
+QLabel#panelLink a:hover {{ text-decoration: underline; }}
+QPushButton#settingsBtn {{ background: transparent; border: none;
+  color: {OVERLAY}; padding: 0; border-radius: 0; }}
+QPushButton#settingsBtn:hover {{ background: {SURFACE0}; }}
 QLineEdit {{
   background: {CRUST}; color: {TEXT}; border: 1px solid {SURFACE1};
   border-radius: 4px; padding: 5px 8px; font-family: Consolas, monospace;
@@ -507,7 +521,7 @@ def http_call(app: dict) -> int:
     method = str(app.get("method") or "GET").upper()
     body = str(app.get("body") or "")
     data = body.encode("utf-8") if body and method in ("POST", "PUT", "PATCH") else None
-    headers = {"User-Agent": "TriggerApp/3.0"}
+    headers = {"User-Agent": "TriggerPanel/3.0"}
     if data is not None and body.lstrip().startswith(("{", "[")):
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -582,7 +596,7 @@ def render_status(cfg: dict) -> bytes:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TriggerApp</title>
+<title>TriggerPanel</title>
 <style>
   body {{ font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto;
          padding: 0 1rem; color: #cdd6f4; background: #181825; }}
@@ -595,9 +609,9 @@ def render_status(cfg: dict) -> bytes:
 </style>
 </head>
 <body>
-  <h1>TriggerApp — running</h1>
+  <h1>TriggerPanel — running</h1>
   <p>Serving on <b>http://{ip}:{cfg["port"]}</b> (this PC's LAN address).
-     Manage entries in the <b>TriggerApp</b> desktop app
+     Manage entries in the <b>TriggerPanel</b> desktop app
      (system tray &rarr; <i>Show Window</i>).</p>
   <p>Shortcut URL format:<br>
      <code>http://{ip}:{cfg["port"]}/run?app=1&amp;token=…</code><br>
@@ -622,11 +636,11 @@ PANEL_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>TriggerApp</title>
+<title>TriggerPanel</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
-<meta name="apple-mobile-web-app-title" content="TriggerApp">
+<meta name="apple-mobile-web-app-title" content="TriggerPanel">
 <link rel="apple-touch-icon" href="/icon">
 <style>
   :root { --bg:#181825; --tile-a:#313244; --tile-b:#1e1e2e; --text:#cdd6f4;
@@ -731,7 +745,7 @@ PANEL_HTML = r"""<!doctype html>
 </head>
 <body>
   <header>
-    <h1>TriggerApp</h1>
+    <h1>TriggerPanel</h1>
     <div class="sub" id="sub">loading…</div>
     <div class="banner" id="banner"></div>
   </header>
@@ -755,7 +769,7 @@ PANEL_HTML = r"""<!doctype html>
         <li>Tap the <b>Share</b> button (square with an arrow).</li>
         <li>Choose <b>Add to Home Screen</b> → <b>Add</b>.</li>
       </ol>
-      <p class="muted2">It appears on your home screen with the TriggerApp
+      <p class="muted2">It appears on your home screen with the TriggerPanel
       icon — one tap to the whole button grid.</p>
       <button class="chip closebtn" data-close>Got it</button>
     </div>
@@ -894,7 +908,7 @@ function buildTile(e) {
   } catch (err) {
     banner.textContent = (err.message === "bad token")
       ? "Bad token — copy a fresh URL from the desktop app."
-      : "Could not load /list — is TriggerApp running?";
+      : "Could not load /list — is TriggerPanel running?";
     banner.style.display = "block";
     sub.textContent = "error";
   }
@@ -971,7 +985,7 @@ document.querySelectorAll(".modal").forEach(function (m) {
 # --------------------------------------------------------------------------- http server
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "TriggerApp/4.0"
+    server_version = "TriggerPanel/4.0"
 
     def log_message(self, fmt, *args):  # route access log into server.log
         log(f"{self.client_address[0]}  {fmt % args}")
@@ -1087,18 +1101,28 @@ class TitleBar(QWidget):
         lay.setContentsMargins(12, 0, 2, 0)
         lay.setSpacing(0)
 
-        title = QLabel("TriggerApp")
+        title = QLabel(f"TriggerPanel  v{APP_VERSION}")
+        title.setObjectName("appTitle")
         title.setStyleSheet(
             f"color: {TEXT}; font-size: 12px; font-weight: bold; "
             "background: transparent;")
         lay.addWidget(title)
 
-        url = QLabel(f"  http://{lan_ip()}:{load_config()['port']}")
-        url.setObjectName("muted")
-        self._url_lbl = url
-        lay.addWidget(url)
-
         lay.addStretch(1)
+
+        gear = QPushButton()  # settings — icon only, no text
+        gear.setObjectName("settingsBtn")
+        gear.setFixedSize(42, 32)
+        gear.setCursor(Qt.CursorShape.PointingHandCursor)
+        gear.setToolTip("Settings")
+        gear_pm = QPixmap(os.path.join(BASE_DIR, SETTINGS_ICON))
+        if not gear_pm.isNull():
+            gear.setIcon(QIcon(gear_pm))
+            gear.setIconSize(QSize(16, 16))
+        else:
+            gear.setText("⚙")  # fallback when the icon file is missing
+        gear.clicked.connect(win.open_settings)
+        lay.addWidget(gear)
 
         min_btn = QPushButton("—")
         min_btn.setObjectName("titleBtn")
@@ -1134,12 +1158,7 @@ class TitleBar(QWidget):
             self.window().showMaximized()
 
 
-class _TokenEdit(QLineEdit):
-    """Read-only token field — clicking selects everything (easy to copy)."""
-
-    def mousePressEvent(self, e):
-        self.selectAll()
-        super().mousePressEvent(e)
+# (token field removed from the main window — the token lives in Settings)
 
 
 _TYPE_COLORS = {"app": BLUE, "keys": GREEN, "http": YELLOW}
@@ -1154,7 +1173,7 @@ class TriggerWindow(QWidget):
         cfg = load_config()
         self._port = int(cfg["port"])
 
-        self.setWindowTitle("TriggerApp")
+        self.setWindowTitle(f"TriggerPanel v{APP_VERSION}")
         self.setWindowIcon(icon)
         self.setMinimumSize(560, 400)
         self.resize(760, 480)
@@ -1171,33 +1190,27 @@ class TriggerWindow(QWidget):
         v.setSpacing(10)
         outer.addWidget(content, 1)
 
-        # ── status row ────────────────────────────────────────────────
+        # ── status + panel link row ───────────────────────────────────
         status_row = QHBoxLayout()
-        self._status = QLabel(f"●  Serving http://{lan_ip()}:{self._port}")
+        status_row.setSpacing(8)
+        self._status = QLabel("●  Running")
         self._status.setObjectName("statusOk")
         self._status_ok_text = self._status.text()
         status_row.addWidget(self._status)
-        status_row.addStretch(1)
+        self._panel_link = QLabel()
+        self._panel_link.setObjectName("panelLink")
+        self._panel_link.setOpenExternalLinks(True)  # click → default browser
+        self._refresh_panel_link()
+        status_row.addWidget(self._panel_link, 1)
+        panel_copy = QPushButton("Copy")
+        panel_copy.setToolTip("Copy the panel link (with token) to share")
+        panel_copy.clicked.connect(
+            lambda: self._copy(self._panel_url(), panel_copy))
+        status_row.addWidget(panel_copy)
         hint = QLabel("reserve this IP in your router so it never changes")
         hint.setObjectName("muted")
         status_row.addWidget(hint)
         v.addLayout(status_row)
-
-        # ── token row ─────────────────────────────────────────────────
-        tok_row = QHBoxLayout()
-        tok_row.setSpacing(6)
-        tok_row.addWidget(QLabel("Token:"))
-        self.token_edit = _TokenEdit(cfg["token"])
-        self.token_edit.setReadOnly(True)
-        self.token_edit.setMinimumWidth(220)
-        tok_row.addWidget(self.token_edit, 1)
-        copy_tok = QPushButton("Copy")
-        copy_tok.clicked.connect(lambda: self._copy(cfg["token"], copy_tok))
-        tok_row.addWidget(copy_tok)
-        settings_btn = QPushButton("⚙ Settings")
-        settings_btn.clicked.connect(self.open_settings)
-        tok_row.addWidget(settings_btn)
-        v.addLayout(tok_row)
 
         # ── entry list ────────────────────────────────────────────────
         self.tree = QTreeWidget()
@@ -1249,7 +1262,7 @@ class TriggerWindow(QWidget):
         self._tray = None
         if enable_tray:
             tray = QSystemTrayIcon(icon, self)
-            tray.setToolTip(f"TriggerApp — http://{lan_ip()}:{self._port}")
+            tray.setToolTip(f"TriggerPanel — http://{lan_ip()}:{self._port}")
             menu = QMenu(self)
             show_action = menu.addAction("Show Window")
             show_action.triggered.connect(self.restore_from_tray)
@@ -1318,8 +1331,8 @@ class TriggerWindow(QWidget):
 
     def _confirm_quit(self) -> bool:
         return QMessageBox.question(
-            self, "TriggerApp",
-            "Exit TriggerApp?\n\nThe server will stop — your phone "
+            self, "TriggerPanel",
+            "Exit TriggerPanel?\n\nThe server will stop — your phone "
             "shortcuts won't work until you start it again.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
@@ -1350,7 +1363,7 @@ class TriggerWindow(QWidget):
         item = self.tree.currentItem()
         if item is None:
             if announce:
-                QMessageBox.information(self, "TriggerApp",
+                QMessageBox.information(self, "TriggerPanel",
                                         "Select an entry first.")
             return None
         return int(item.data(0, Qt.ItemDataRole.UserRole))
@@ -1395,14 +1408,13 @@ class TriggerWindow(QWidget):
 
     def _settings_saved(self, port_changed: bool, cfg: dict) -> None:
         """Refresh the chrome after Settings wrote config.json."""
-        self.token_edit.setText(cfg["token"])
         if port_changed:
             self._port = int(cfg["port"])
-            self._url_lbl.setText(f"  http://{lan_ip()}:{self._port}")
-            self._serving_text = f"●  Serving http://{lan_ip()}:{self._port}"
+        self._refresh_panel_link()  # token and/or port may have changed
+        if port_changed:
             answer = QMessageBox.question(
-                self, "TriggerApp",
-                "Settings saved.\n\nThe port changed — restart TriggerApp "
+                self, "TriggerPanel",
+                "Settings saved.\n\nThe port changed — restart TriggerPanel "
                 "now? (Token and Run-at-boot already apply.)",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
@@ -1434,7 +1446,7 @@ class TriggerWindow(QWidget):
         except Exception as e:
             log(f"FAILED #{app_id} {app.get('name')!r} [{entry_type(app)}]: {e}")
             QMessageBox.critical(
-                self, "TriggerApp",
+                self, "TriggerPanel",
                 f"Could not run {app.get('name')}:\n\n{e}")
             return
         log(f"ran #{app_id} {app.get('name')!r} [{entry_type(app)}] — {detail} (GUI)")
@@ -1450,7 +1462,7 @@ class TriggerWindow(QWidget):
             self.refresh()
             return
         answer = QMessageBox.question(
-            self, "TriggerApp",
+            self, "TriggerPanel",
             f"Delete #{app_id} — {app.get('name')}?\n\n"
             "Other entries keep their numbers.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1463,6 +1475,22 @@ class TriggerWindow(QWidget):
             _write_config(cfg)
         log(f"deleted #{app_id} {app.get('name')!r}")
         self.refresh()
+
+    def _panel_url(self) -> str:
+        """Shareable panel link — includes the token so tiles can fire."""
+        cfg = load_config()
+        return (f"http://{lan_ip()}:{cfg['port']}/panel"
+                f"?token={cfg['token']}")
+
+    def _refresh_panel_link(self) -> None:
+        url = self._panel_url()
+        # Show only the clean panel URL — the token stays hidden inside the
+        # anchor's href, so clicking still opens the working link and Copy
+        # (via _panel_url) still shares the full tokenized URL.
+        display = url.split("?")[0]
+        self._panel_link.setText(
+            f'<a href="{url}" style="color:{BLUE}; text-decoration:none;">'
+            f"{display}</a>")
 
     def copy_url(self, btn: QPushButton | None = None) -> None:
         app_id = self._selected()
@@ -1888,7 +1916,7 @@ class NewEntryOverlay(QWidget):
         if self._chosen is None:
             raise ValueError("no type chosen")
         if not name:
-            QMessageBox.warning(self, "TriggerApp", "Name is required.")
+            QMessageBox.warning(self, "TriggerPanel", "Name is required.")
             self._name_edit.setFocus()
             raise ValueError("name missing")
         fields: dict = {"name": name, "type": self._chosen}
@@ -1898,7 +1926,7 @@ class NewEntryOverlay(QWidget):
         if self._chosen == "app":
             path = self._path_edit.text().strip()
             if not path:
-                QMessageBox.warning(self, "TriggerApp",
+                QMessageBox.warning(self, "TriggerPanel",
                                     "Path / command is required.")
                 self._path_edit.setFocus()
                 raise ValueError("path missing")
@@ -1906,7 +1934,7 @@ class NewEntryOverlay(QWidget):
         elif self._chosen == "script":
             script = self._script_edit.text().strip()
             if not script:
-                QMessageBox.warning(self, "TriggerApp",
+                QMessageBox.warning(self, "TriggerPanel",
                                     "Script path is required.")
                 self._script_edit.setFocus()
                 raise ValueError("script missing")
@@ -1917,14 +1945,14 @@ class NewEntryOverlay(QWidget):
         elif self._chosen == "keys":
             keys = self._keys_edit.text().strip()
             if not keys:
-                QMessageBox.warning(self, "TriggerApp",
+                QMessageBox.warning(self, "TriggerPanel",
                                     "Keystroke sequence is required.")
                 self._keys_edit.setFocus()
                 raise ValueError("keys missing")
             try:
                 parse_keys(keys)  # validate without sending
             except ValueError as e:
-                QMessageBox.warning(self, "TriggerApp",
+                QMessageBox.warning(self, "TriggerPanel",
                                     f"Invalid keystrokes:\n{e}")
                 self._keys_edit.setFocus()
                 raise ValueError(str(e)) from e
@@ -1933,7 +1961,7 @@ class NewEntryOverlay(QWidget):
             url = self._url_edit.text().strip()
             if not url.startswith(("http://", "https://")):
                 QMessageBox.warning(
-                    self, "TriggerApp",
+                    self, "TriggerPanel",
                     "URL is required and must start with http:// or https://")
                 self._url_edit.setFocus()
                 raise ValueError("url missing")
@@ -1964,8 +1992,9 @@ class NewEntryOverlay(QWidget):
 STARTUP_DIR = os.path.join(
     os.environ.get("APPDATA", ""),
     "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
-BOOT_LNK = os.path.join(STARTUP_DIR, "TriggerApp.lnk")
+BOOT_LNK = os.path.join(STARTUP_DIR, "TriggerPanel.lnk")
 BOOT_PYTHON = os.path.join(BASE_DIR, "venv", "Scripts", "pythonw.exe")
+EXE_PATH = os.path.join(BASE_DIR, "TriggerPanel.exe")  # built exe (project root)
 
 
 def boot_enabled() -> bool:
@@ -1977,16 +2006,26 @@ def _ps_quote(s: str) -> str:
 
 
 def set_boot(enabled: bool) -> None:
-    """Create/remove the Startup shortcut so TriggerApp starts with Windows."""
+    """Create/remove the Startup shortcut so TriggerPanel starts with Windows."""
     if enabled:
-        script = os.path.abspath(__file__)
-        if not os.path.isfile(BOOT_PYTHON):
-            raise RuntimeError(f"pythonw not found at {BOOT_PYTHON}")
+        # Prefer the built .exe (frozen self, or the root build when running
+        # from source); fall back to launching server.py via pythonw.
+        if FROZEN:
+            target = sys.executable
+            arguments = ""
+        elif os.path.isfile(EXE_PATH):
+            target = EXE_PATH
+            arguments = ""
+        else:
+            target = BOOT_PYTHON
+            arguments = chr(34) + os.path.abspath(__file__) + chr(34)
+            if not os.path.isfile(target):
+                raise RuntimeError(f"pythonw not found at {target}")
         ps = (
             "$ws = New-Object -ComObject WScript.Shell; "
             f"$l = $ws.CreateShortcut({_ps_quote(BOOT_LNK)}); "
-            f"$l.TargetPath = {_ps_quote(BOOT_PYTHON)}; "
-            f"$l.Arguments = {_ps_quote(chr(34) + script + chr(34))}; "
+            f"$l.TargetPath = {_ps_quote(target)}; "
+            f"$l.Arguments = {_ps_quote(arguments)}; "
             f"$l.WorkingDirectory = {_ps_quote(BASE_DIR)}; "
             "$l.WindowStyle = 7; $l.Save()"
         )
@@ -2095,12 +2134,12 @@ class SettingsOverlay(QWidget):
         """(port, token, run_at_boot) from the form; warns + raises if invalid."""
         port_s = self._port_edit.text().strip()
         if not port_s.isdigit() or not (1 <= int(port_s) <= 65535):
-            QMessageBox.warning(self, "TriggerApp",
+            QMessageBox.warning(self, "TriggerPanel",
                                 "Port must be a number between 1 and 65535.")
             raise ValueError("port")
         token = self._token_edit.text().strip()
         if not token:
-            QMessageBox.warning(self, "TriggerApp",
+            QMessageBox.warning(self, "TriggerPanel",
                                 "Token cannot be empty.")
             raise ValueError("token")
         return int(port_s), token, self._boot_check.isChecked()
@@ -2132,7 +2171,7 @@ class SettingsOverlay(QWidget):
             if boot != boot_enabled():
                 set_boot(boot)
         except Exception as e:
-            QMessageBox.warning(self, "TriggerApp",
+            QMessageBox.warning(self, "TriggerPanel",
                                 f"Could not update Run at boot:\n{e}")
             return
         with CONFIG_LOCK:
@@ -2252,8 +2291,8 @@ def main() -> None:
     except OSError as e:
         log(f"cannot bind 0.0.0.0:{port} — {e} (already running?)")
         QMessageBox.critical(
-            None, "TriggerApp",
-            f"Port {port} is already in use — TriggerApp is probably "
+            None, "TriggerPanel",
+            f"Port {port} is already in use — TriggerPanel is probably "
             "already running.")
         sys.exit(1)
 
@@ -2274,9 +2313,9 @@ def main() -> None:
             pass
         if _RESTART["pending"]:
             log("restarting with new settings…")
-            subprocess.Popen(
-                [sys.executable, os.path.abspath(__file__)],
-                cwd=BASE_DIR, creationflags=CREATE_NO_WINDOW)
+            cmd = [sys.executable] if FROZEN else \
+                [sys.executable, os.path.abspath(__file__)]
+            subprocess.Popen(cmd, cwd=BASE_DIR, creationflags=CREATE_NO_WINDOW)
         log("exited")
 
 

@@ -8,5 +8,5 @@ if not exist "venv\Scripts\pythonw.exe" (
 )
 
 start "" "venv\Scripts\pythonw.exe" "%~dp0server.py"
-echo TriggerApp started - closing or minimizing the window sends it to the system tray.
+echo TriggerPanel started - closing or minimizing the window sends it to the system tray.
 echo Your shortcut base URL is shown in the window header (http://YOUR-IP:8765).

@@ -25,5 +25,5 @@ echo Installing dependencies (PyQt6)...
 "venv\Scripts\python.exe" -m pip install -r requirements.txt --quiet
 
 echo.
-echo [OK] TriggerApp installed. Run start.bat to launch it.
+echo [OK] TriggerPanel installed. Run start.bat to launch it.
 pause

@@ -1,8 +1,8 @@
-# TriggerApp
+# TriggerPanel
 
 Tap a shortcut on your iPhone → an app launches on this PC.
 
-TriggerApp is a **native PyQt6 desktop app** — dark theme styled like
+TriggerPanel is a **native PyQt6 desktop app** — dark theme styled like
 TradingBot (Catppuccin Mocha, `#181825` base, `#89b4fa` accent) — with a
 built-in HTTP server and a system-tray icon. Each app you register gets a
 **permanent index number** (`#1`, `#2`, …) and your phone just calls:
@@ -52,12 +52,30 @@ you exactly what happened.
 
 1. **Install** — `install.bat` (venv + PyQt6).
 2. **Firewall** — right-click `add-firewall.bat` → **Run as administrator**.
-3. **Autostart** — already configured (starts at sign-in via your Startup
-   folder).
+3. **Autostart** — already configured: the Startup shortcut launches
+   `TriggerPanel.exe` at sign-in.
 4. **Start now** — `start.bat`, or the already-running instance.
 5. **Reserve your IP** in the router (DHCP reservation / static lease) so
    `http://<YOUR-IP>:8765` never breaks.
 6. **Add entries** via **+ New entry** (wizard); use **Copy URL** on each row.
+
+## Windows .exe (what Startup runs)
+
+`TriggerPanel.exe` at the project root is a self-contained build (PyInstaller,
+onefile, windowed, icon embedded) — **no Python required to run it** — and
+it's what the Startup shortcut launches. It reads `config.json` /
+`server.log` sitting next to it (same token and entries as source runs).
+
+Rebuild after code changes:
+
+```bat
+venv\Scripts\python -m PyInstaller --noconfirm --onefile --windowed --name TriggerPanel --icon app_icon.ico --distpath . --workpath build server.py
+```
+
+Notes: the onefile bundle unpacks on every start (~2–4 s extra at login),
+and because the exe is unsigned, Windows SmartScreen may show a one-time
+“More info → Run anyway” prompt. Settings → **Run at boot** always points
+the Startup shortcut at the exe when it exists.
 
 ## Phone panel, /list & icons
 
@@ -122,6 +140,6 @@ or a Home Screen icon (Share → Add to Home Screen).
 - The `token` in `config.json` is a secret: anyone who has it can launch
   apps on your PC. Don't share the full URL publicly.
 - Changed the port? Edit `config.json`, re-run `add-firewall.bat` with the
-  new port, restart TriggerApp.
+  new port, restart TriggerPanel.
 - Troubleshooting: open `http://<YOUR-IP>:8765/health` on the phone, check
   `server.log`, confirm same Wi-Fi, confirm the firewall rule exists.

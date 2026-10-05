@@ -26,9 +26,50 @@ Escape / click-outside to dismiss) asks what it should do:
 | **Python script** | Run a `.py` file with its own virtualenv's interpreter — auto-detects `venv/` / `.venv/` next to the script, or set an explicit venv path |
 | **Send keystrokes** | Press a combo — or a series (`ctrl+shift+s, enter`) — via `SendInput`. Keys go to the window focused on your PC when it fires. Can't inject into windows running as admin (UIPI) |
 | **Call an API endpoint** | HTTP `GET/POST/PUT/PATCH/DELETE` with optional body. 4xx/5xx counts as "called"; only connection failures error |
+| **Run Function** | A built-in action that runs inside TriggerPanel — no script, no venv. Today: **Monitor brightness** (sets the panel's own OSD brightness on the displays it finds) |
+
+**Run Function is machine-agnostic**: the displays are discovered when the
+wizard opens and when the entry fires — nothing per-machine is ever stored.
+Its page shows **one checkbox per detected display**, labelled with what the
+panel itself reports (name, model or `Display N` when the monitor gives no
+name) plus the monitor's own id, e.g.
+
+```
+☑ Display 1 — LG Electronics ULTRAGEAR+ · id 4356
+☑ Display 2 — PA329CV · id 4353
+```
+
+Uncheck the ones you don't want; leave them all checked for "every display".
+A `Value` field takes 0–100, and a **Fade** checkbox decides whether the panels
+*ramp* to it or jump straight there. Every selected display starts its fade on
+its own thread and they are joined at the end — **the screens move together**,
+not one after the other. **Fade speed** offers `slow / normal / fast`
+(measured on these two panels, both at once, 100 → 20: 5.1 s / 3.6 s / 2.0 s).
+**Test now** runs exactly those options right there — the screens change, the
+result line reports what each panel actually ended up at, and **nothing is
+saved** until you press Add entry. The same entry works on any Windows machine
+with any DDC/CI panel — and on laptop lids, which use the ACPI path instead.
+
+**Icon picker:** every entry's Icon row has a **Find icons** field — type a
+word (`brightness`, `spotify`, `volume`…) and it offers up to five matching
+ids from the same service the phone panel renders through; tap one and it
+fills the Icon field. Built-ins also suggest a starting icon on their own.
+Offline it says so plainly and leaves the field alone.
+
+```
+python functions.py                 list every monitor + its brightness
+python functions.py -f 50          fade every monitor to 50%
+python functions.py -s 50          set 50% immediately, no fade
+python functions.py 50             same as -f 50
+python functions.py -f 50 -d 0     only display 0 (repeat -d, or use a name)
+python functions.py -f 50 --speed fast   slow | normal | fast
+```
+Flags mirror `python -m screen_brightness_control -d 0 -f 50`, and
+`functions.py` is the exact code the app runs — the terminal and the shortcut
+URL do the same thing.
 
 The list shows each entry's **type** (color-coded: blue app / purple script / green keys /
-yellow http) and details, and `/run` responses include
+yellow http / pink function) and details, and `/run` responses include
 `{"ok": true, "type": ..., "detail": ...}` so your phone notification tells
 you exactly what happened.
 
@@ -124,6 +165,7 @@ or a Home Screen icon (Share → Add to Home Screen).
 | File                    | Purpose                                   |
 | ----------------------- | ----------------------------------------- |
 | `server.py`             | GUI (PyQt6) + tray + HTTP server (one file) |
+| `functions.py`          | Built-in actions (Run Function) + the same tool as a command line |
 | `config.json`           | Port, token, your app list                |
 | `start.bat`             | Launch now                                |
 | `install.bat`           | Create/repair venv + install PyQt6        |

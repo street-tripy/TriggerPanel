@@ -10,17 +10,20 @@ system-tray icon, plus a tiny HTTP server:
   GET  /panel?token=         hosted button page (icons, one tap = trigger)
   GET  /health               liveness probe
 
-Entries come in four types — created via a frameless wizard overlay:
+Entries come in five types — created via a frameless wizard overlay:
   app    — launch an .exe / .lnk / URI / command line
   script — run a .py file with its own virtualenv's interpreter
   keys   — press a keystroke or a series of keystrokes (SendInput)
   http   — call an API endpoint (GET/POST/PUT/PATCH/DELETE)
+  func   — run a built-in action (see functions.py: monitor brightness),
+           which discovers the displays itself — nothing per-machine is stored
 
 Closing or minimizing the main window hides it to the system tray.
 Config lives in config.json; log output goes to server.log.
 """
 
 import ctypes
+import functions  # built-in actions (sibling module — also runnable on its own)
 import html
 import json
 import os
@@ -36,15 +39,17 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from PyQt6.QtCore import QBuffer, QEvent, QIODevice, QPointF, QSize, Qt, QTimer
-from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPolygonF, QPixmap
+from PyQt6.QtGui import (QBrush, QColor, QFont, QIcon, QPainter, QPen,
+                         QPolygonF, QPixmap)
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox,
                              QGraphicsDropShadowEffect, QGroupBox, QHBoxLayout,
                              QHeaderView, QLabel, QLineEdit, QMenu,
                              QMessageBox, QPushButton, QStackedWidget,
+                             QSpinBox,
                              QSystemTrayIcon, QTreeWidget, QTreeWidgetItem,
                              QVBoxLayout, QWidget)
 
@@ -73,9 +78,9 @@ ICON_PNG: bytes | None = None
 # main() checks it after the event loop exits and starts a fresh instance.
 _RESTART = {"pending": False}
 
-ENTRY_TYPES = ("app", "script", "keys", "http")
+ENTRY_TYPES = ("app", "script", "keys", "http", "func")
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.5.0"
 SETTINGS_ICON = "settings.png"   # title-bar gear (from TradingBot ui/icons)
 
 # ── TradingBot palette (Catppuccin Mocha) ─────────────────────────────────────
@@ -92,6 +97,7 @@ BLUE = "#89b4fa"      # accent
 GREEN = "#a6e3a1"
 RED = "#f38ba8"
 YELLOW = "#f9e2af"
+PINK = "#f78199"      # built-in functions
 
 STYLESHEET = f"""
 TriggerWindow {{ background: {BASE}; }}
@@ -99,7 +105,8 @@ TitleBar {{ background: {CRUST}; }}
 QLabel {{ color: {TEXT}; background: transparent; }}
 QLabel#muted {{ color: {OVERLAY}; font-size: 11px; }}
 QLabel#wizardHint {{ color: {OVERLAY}; font-size: 11px; }}
-QLabel#stepLbl {{ color: {SUBTEXT}; font-size: 11px; font-weight: bold; }}
+QLabel#stepLbl {{ color: {SUBTEXT}; background: {MANTLE}; font-size: 11px;
+  font-weight: bold; }}
 QLabel#statusOk {{ color: {GREEN}; font-weight: bold; }}
 QLabel#statusWarn {{ color: {RED}; font-weight: bold; }}
 QLabel#statusInfo {{ color: {BLUE}; font-weight: bold; }}
@@ -276,6 +283,13 @@ def entry_details(app: dict) -> str:
         return str(app.get("script", ""))
     if t == "keys":
         return str(app.get("keys", ""))
+    if t == "func":
+        fn = functions.FUNCTIONS.get(str(app.get("func", "")))
+        name = fn["label"] if fn else str(app.get("func", ""))
+        try:
+            return f"{name} — {fn['detail'](app)}" if fn else name
+        except Exception:
+            return name
     return f"{app.get('method', 'GET')} {app.get('url', '')}"
 
 
@@ -567,6 +581,23 @@ def run_script(app: dict) -> str:
     return f"ran {os.path.basename(script)} with {py}"
 
 
+def icon_search(words: str, limit: int = 6) -> list:
+    """Ask Iconify for icon ids matching words — the same service the phone
+    panel renders through, so anything offered here is directly usable."""
+    words = (words or "").strip()
+    if not words:
+        return []
+    url = "https://api.iconify.design/search?limit=%d&query=%s" % (
+        limit, quote(words))
+    req = urllib.request.Request(url, headers={"User-Agent": "TriggerPanel"})
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return []          # offline / blocked: the caller says so plainly
+    return [i for i in data.get("icons", []) if isinstance(i, str)]
+
+
 def execute(app: dict) -> str:
     """Run an entry by type. Returns a short detail string for UI/JSON."""
     t = entry_type(app)
@@ -581,6 +612,8 @@ def execute(app: dict) -> str:
     if t == "http":
         status = http_call(app)
         return f"{app.get('method', 'GET')} {app.get('url')} → HTTP {status}"
+    if t == "func":
+        return functions.run(str(app.get("func", "")), app)
     raise ValueError(f"unknown entry type {t!r}")
 
 
@@ -1161,7 +1194,7 @@ class TitleBar(QWidget):
 # (token field removed from the main window — the token lives in Settings)
 
 
-_TYPE_COLORS = {"app": BLUE, "keys": GREEN, "http": YELLOW}
+_TYPE_COLORS = {"app": BLUE, "keys": GREEN, "http": YELLOW, "func": PINK}
 
 
 class TriggerWindow(QWidget):
@@ -1612,7 +1645,8 @@ class NewEntryOverlay(QWidget):
         self._edit_id = entry["id"] if entry is not None else None
 
         self.setWindowTitle("Edit entry" if entry else "New entry")
-        self.setFixedSize(500, 470)
+        # 5 type cards on page 1 + the tallest details page — keep both inside.
+        self.setFixedSize(500, 520)
         self.setStyleSheet(WIZARD_STYLESHEET)
         _apply_overlay_chrome(self)
 
@@ -1680,6 +1714,24 @@ class NewEntryOverlay(QWidget):
                 self._url_edit.setText(entry.get("url", ""))
                 self._method_box.setCurrentText(entry.get("method", "GET"))
                 self._body_edit.setText(entry.get("body", ""))
+            elif t == "func":
+                key = str(entry.get("func", ""))
+                fn = functions.FUNCTIONS.get(key)
+                self._func_box.setCurrentText(
+                    fn["label"] if fn else next(iter(self._func_labels), ""))
+                spec = str(entry.get("monitors", "all")).strip().lower()
+                want = None if spec in ("", "all") else {
+                    int(s) for s in spec.split(",") if s.strip().isdigit()}
+                for i, cb in self._mon_selected:
+                    cb.setChecked(want is None or i in want)
+                try:
+                    self._value_spin.setValue(int(entry.get("value", 50)))
+                except (TypeError, ValueError):
+                    pass
+                self._fade_check.setChecked(bool(entry.get("fade", True)))
+                speed = str(entry.get("speed", functions.DEFAULT_SPEED))
+                if speed in functions.FADE_SPEEDS:
+                    self._speed_box.setCurrentText(speed)
             self._step_lbl.setText(f"Editing #{entry['id']} — {t}")
             self._name_edit.selectAll()
 
@@ -1708,6 +1760,9 @@ class NewEntryOverlay(QWidget):
             ("🌐  Call an API endpoint",
              "Make an HTTP request to a URL",
              "http"),
+            ("ƒ  Run Function",
+             "Run a built-in action (monitor brightness)",
+             "func"),
         ]
         for label, sub, key in cards:
             # Plain text only — rich-text markup rendered as literal tags.
@@ -1736,7 +1791,25 @@ class NewEntryOverlay(QWidget):
         self._method_box.setCurrentText("GET")
         self._body_edit.clear()
         self._icon_edit.clear()
+        self._func_box.setCurrentIndex(0)
+        self._value_spin.setValue(50)
+        self._fade_check.setChecked(True)
+        self._speed_box.setCurrentText(functions.DEFAULT_SPEED)
+        self._icon_find_edit.clear()
+        self._icon_hint.hide()
+        for cb in self._mon_checks:
+            cb.hide()
+        self._mon_hint.hide()
+        for btn in self._icon_choices:
+            btn.hide()
+        self._mon_selected = []
         self._detail_stack.setCurrentIndex(ENTRY_TYPES.index(key))
+        if key == "func":
+            self._fill_monitors()
+            key0 = self._func_labels.get(self._func_box.currentText())
+            icon = functions.FUNCTIONS.get(key0 or "", {}).get("icon", "")
+            if icon:
+                self._icon_edit.setText(icon)
         self._step_lbl.setText(f"Step 2 of 2 — {key} details")
         self._back_btn.show()
         self._add_btn.show()
@@ -1748,6 +1821,88 @@ class NewEntryOverlay(QWidget):
         self._back_btn.hide()
         self._add_btn.hide()
         self._stack.setCurrentIndex(0)
+
+    # -- live options: displays on this machine, icon suggestions ----------
+
+    def _fill_monitors(self) -> None:
+        """Show one checkbox per display this machine reports, all checked."""
+        try:
+            found = functions.monitors()
+        except Exception:
+            found = []
+        self._mon_selected = []
+        if not found:
+            self._mon_hint.setText("no controllable display found on this "
+                                   "machine — the entry will report that when "
+                                   "it runs")
+            self._mon_hint.show()
+            return
+        for cb, m in zip(self._mon_checks, found):
+            cb.setText(functions.label(m))
+            cb.setChecked(True)
+            cb.show()
+            self._mon_selected.append((m["index"], cb))
+
+    def _find_icons(self) -> None:
+        words = (self._icon_find_edit.text().strip()
+                 or self._name_edit.text().strip())
+        ids = icon_search(words)
+        if not ids:
+            self._icon_hint.setText("no matches — offline, or try other words")
+            self._icon_hint.show()
+            return
+        self._icon_hint.hide()
+        for btn, icon_id in zip(self._icon_choices, ids):
+            btn.setText(icon_id)
+            btn.show()
+        for btn in self._icon_choices[len(ids):]:
+            btn.hide()
+
+    def _icon_take(self, value: str) -> None:
+        self._icon_edit.setText(value)
+        self._icon_edit.setFocus()
+
+    def _func_fields(self) -> dict:
+        """The Run Function options as they stand right now. Raises ValueError
+        (the message has already been shown) when they aren't usable."""
+        key = self._func_labels.get(self._func_box.currentText())
+        if not key:
+            QMessageBox.warning(self, "TriggerPanel",
+                                "Pick one of the built-in functions.")
+            self._func_box.setFocus()
+            raise ValueError("no function picked")
+        if not self._mon_selected:
+            QMessageBox.warning(self, "TriggerPanel",
+                                "This machine reports no controllable display.")
+            raise ValueError("no displays")
+        sel = [i for i, cb in self._mon_selected if cb.isChecked()]
+        if not sel:
+            QMessageBox.warning(self, "TriggerPanel",
+                                "Check at least one display.")
+            raise ValueError("no display selected")
+        return {
+            "func": key,
+            "monitors": ("all" if len(sel) == len(self._mon_selected)
+                         else ",".join(str(i) for i in sel)),
+            "value": self._value_spin.value(),
+            "fade": self._fade_check.isChecked(),
+            "speed": self._speed_box.currentText(),
+        }
+
+    def _test_function(self) -> None:
+        """Run the built-in with the options as set — nothing is saved."""
+        try:
+            fields = self._func_fields()
+        except ValueError:
+            return
+        try:
+            detail = functions.run(fields["func"], fields)
+        except Exception as exc:
+            self._test_result.setText("✗ " + str(exc))
+            self._test_result.setStyleSheet(f"color: {RED}; font-size: 12px;")
+            return
+        self._test_result.setText("✓ " + detail)
+        self._test_result.setStyleSheet(f"color: {GREEN}; font-size: 12px;")
 
     # -- page 2: details --------------------------------------------------
 
@@ -1775,6 +1930,36 @@ class NewEntryOverlay(QWidget):
             "flowbite:bug-solid   —   or an image URL (optional)")
         icon_row.addWidget(self._icon_edit, 1)
         lay.addLayout(icon_row)
+
+        # icon picker: search words → real Iconify ids, one tap to take one
+        find_row = QHBoxLayout()
+        find_row.setSpacing(6)
+        find_row.addWidget(QLabel("Find icons"))
+        self._icon_find_edit = QLineEdit()
+        self._icon_find_edit.setPlaceholderText(
+            "words — blank uses the entry name")
+        find_row.addWidget(self._icon_find_edit, 1)
+        self._icon_find_btn = QPushButton("Find")
+        self._icon_find_btn.setObjectName("accent")
+        self._icon_find_btn.clicked.connect(self._find_icons)
+        find_row.addWidget(self._icon_find_btn)
+        lay.addLayout(find_row)
+
+        results_row = QHBoxLayout()
+        results_row.setSpacing(6)
+        self._icon_hint = QLabel("")
+        self._icon_hint.setObjectName("wizardHint")
+        self._icon_hint.hide()
+        results_row.addWidget(self._icon_hint)
+        self._icon_choices = []
+        for _ in range(5):
+            btn = QPushButton()
+            btn.hide()
+            btn.clicked.connect(
+                lambda _=False, b=btn: self._icon_take(b.text()))
+            results_row.addWidget(btn)
+            self._icon_choices.append(btn)
+        lay.addLayout(results_row)
 
         # type-specific fields, swapped by the chosen type
         self._detail_stack = QStackedWidget()
@@ -1859,8 +2044,87 @@ class NewEntryOverlay(QWidget):
         http_l.addWidget(http_hint)
         self._detail_stack.addWidget(http_g)
 
+        # func — built-in actions (displays are discovered at run time)
+        func_g = QGroupBox(" Run Function ")
+        func_l = QVBoxLayout(func_g)
+        func_row = QHBoxLayout()
+        func_row.setSpacing(6)
+        func_row.addWidget(QLabel("Function"))
+        self._func_box = QComboBox()
+        self._func_labels = {fn["label"]: key
+                             for key, fn in functions.FUNCTIONS.items()}
+        for label in self._func_labels:
+            self._func_box.addItem(label)
+        self._func_box.setMinimumWidth(150)
+        func_row.addWidget(self._func_box, 1)
+        func_l.addLayout(func_row)
+        # one checkbox per display this machine reports — filled when opened
+        self._mon_row = QVBoxLayout()
+        func_l.addLayout(self._mon_row)
+        self._mon_checks = []
+        for _ in range(6):
+            cb = QCheckBox()
+            cb.hide()
+            self._mon_row.addWidget(cb)
+            self._mon_checks.append(cb)
+        self._mon_hint = QLabel("")
+        self._mon_hint.setObjectName("wizardHint")
+        self._mon_hint.hide()
+        self._mon_row.addWidget(self._mon_hint)
+        val_row = QHBoxLayout()
+        val_row.setSpacing(6)
+        val_row.addWidget(QLabel("Value"))
+        self._value_spin = QSpinBox()
+        self._value_spin.setRange(0, 100)
+        self._value_spin.setValue(50)
+        val_row.addWidget(self._value_spin, 1)
+        self._fade_check = QCheckBox("Fade")
+        self._fade_check.setChecked(True)
+        val_row.addWidget(self._fade_check)
+        func_l.addLayout(val_row)
+        speed_row = QHBoxLayout()
+        speed_row.setSpacing(6)
+        speed_row.addWidget(QLabel("Fade speed"))
+        self._speed_box = QComboBox()
+        self._speed_box.addItems(list(functions.FADE_SPEED_ORDER))
+        self._speed_box.setCurrentText(functions.DEFAULT_SPEED)
+        self._speed_box.setMinimumWidth(90)
+        speed_row.addWidget(self._speed_box)
+        speed_row.addStretch(1)
+        func_l.addLayout(speed_row)
+        test_row = QHBoxLayout()
+        test_row.setSpacing(6)
+        self._test_btn = QPushButton("Test now")
+        self._test_btn.clicked.connect(self._test_function)
+        test_row.addWidget(self._test_btn)
+        self._test_result = QLabel("runs the options above — nothing is saved")
+        self._test_result.setObjectName("wizardHint")
+        self._test_result.setWordWrap(True)
+        test_row.addWidget(self._test_result, 1)
+        func_l.addLayout(test_row)
+        func_hint = QLabel(
+            "Built-ins run inside TriggerPanel — no script path, no venv. "
+            "Monitors are found when the entry fires, so nothing here is "
+            "tied to this machine.")
+        func_hint.setObjectName("wizardHint")
+        func_hint.setWordWrap(True)
+        func_l.addWidget(func_hint)
+        self._detail_stack.addWidget(func_g)
+
         lay.addWidget(self._detail_stack)
         return page
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        """Paint the card. A plain QWidget that IS the window root gets no
+        background from its own QSS sheet, so the title row was never cleared
+        between frames and any label there overpainted its own old text
+        (the 'Step 1 of 2' ghost). Filling the rect is what erases it —
+        same colours the QSS declares, so nothing can drift."""
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(MANTLE))
+        p.setPen(QPen(QColor(OVERLAY), 1))
+        p.drawRect(self.rect().adjusted(0, 0, -1, -1))
+        p.end()
 
     # -- dismissal (TradingBot overlay pattern) ---------------------------
 
@@ -1957,6 +2221,8 @@ class NewEntryOverlay(QWidget):
                 self._keys_edit.setFocus()
                 raise ValueError(str(e)) from e
             fields["keys"] = keys
+        elif self._chosen == "func":
+            fields.update(self._func_fields())
         else:  # http
             url = self._url_edit.text().strip()
             if not url.startswith(("http://", "https://")):
@@ -2185,6 +2451,18 @@ class SettingsOverlay(QWidget):
         if self._on_saved is not None:
             self._on_saved(port_changed, cfg)
         self.close()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        """Paint the card. A plain QWidget that IS the window root gets no
+        background from its own QSS sheet, so the title row was never cleared
+        between frames and any label there overpainted its own old text
+        (the 'Step 1 of 2' ghost). Filling the rect is what erases it —
+        same colours the QSS declares, so nothing can drift."""
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(MANTLE))
+        p.setPen(QPen(QColor(OVERLAY), 1))
+        p.drawRect(self.rect().adjusted(0, 0, -1, -1))
+        p.end()
 
     # -- dismissal (TradingBot overlay pattern) ---------------------------
 
